@@ -25,6 +25,8 @@
 #include <iomanip>
 
 #include <opencv2/opencv.hpp>
+#include <ctime>
+#include <sys/stat.h>
 // <---- Includes
 
 // ----> Camera settings control
@@ -103,15 +105,27 @@ bool autoWB=false;
 
 bool applyAECAGCrectLeft=false;
 bool applyAECAGCrectRight=false;
+bool enableRecord = false;
+std::string recordFolder = "build/zed_output/";
+bool writerInitialized = false;
+cv::VideoWriter videoWriter;
 // <---- Global variables
 
 // The main function
 int main(int argc, char *argv[])
 {
-    // ----> Silence unused warning
-    (void)argc;
-    (void)argv;
-    // <---- Silence unused warning
+    for(int i=1;i<argc;++i)
+    {
+        std::string arg = argv[i];
+        if(arg=="--record")
+            enableRecord = true;
+        else if(arg=="--rec-out-folder" && i+1<argc)
+        {
+            recordFolder = argv[++i];
+            if(!recordFolder.empty() && recordFolder.back()!='/')
+                recordFolder.push_back('/');
+        }
+    }
 
     sl_oc::VERBOSITY verbose = sl_oc::VERBOSITY::INFO;
 
@@ -133,6 +147,13 @@ int main(int argc, char *argv[])
     }
     std::cout << "Connected to camera sn: " << cap.getSerialNumber() << std::endl;
     // <---- Create Video Capture
+
+    if(enableRecord)
+    {
+        struct stat st{};
+        if(stat(recordFolder.c_str(), &st)!=0)
+            mkdir(recordFolder.c_str(), 0755);
+    }
 
     // ----> Create rendering window
     cv::namedWindow(win_name);
@@ -159,6 +180,22 @@ int main(int argc, char *argv[])
         const sl_oc::video::Frame frame = cap.getLastFrame(frame_timeout_msec);
         img_w = frame.width;
         img_h = frame.height;
+        if(enableRecord && frame.data!=nullptr && !writerInitialized)
+        {
+            time_t raw_t = time(nullptr);
+            struct tm* t = localtime(&raw_t);
+            char name[64];
+            strftime(name, sizeof(name), "test_zed_oc_control_example_%Y-%m-%d_%H-%M-%S.mp4", t);
+            std::string filePath = recordFolder + name;
+            videoWriter.open(filePath,
+                             cv::VideoWriter::fourcc('a','v','c','1'),
+                             static_cast<int>(params.fps),
+                             cv::Size(frame.width, frame.height));
+            if(!videoWriter.isOpened())
+                std::cerr << "Unable to open VideoWriter at " << filePath << std::endl;
+            else
+                writerInitialized = true;
+        }
 
         // 3a) Apply AEC AGC ROI if necessary
         if(applyAECAGCrectLeft)
@@ -204,6 +241,11 @@ int main(int argc, char *argv[])
             cv::cvtColor(frameYUV,frameBGR,cv::COLOR_YUV2BGR_YUYV);
             // <---- Conversion from YUV 4:2:2 to BGR for visualization
 
+            if(enableRecord && writerInitialized && videoWriter.isOpened())
+            {
+                videoWriter.write(frameBGR);
+            }
+
             // 4.c) Show frame
             showImage( win_name, frameBGR, params.res );
         }
@@ -232,6 +274,9 @@ int main(int argc, char *argv[])
         }
         // <---- Keyboard handling
     }
+
+    if(videoWriter.isOpened())
+        videoWriter.release();
 
     return EXIT_SUCCESS;
 }
