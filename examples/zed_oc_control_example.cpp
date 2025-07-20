@@ -29,6 +29,8 @@
 #include <sys/stat.h>
 #include <cstdio>
 #include <sstream>
+#include <cstdlib>
+
 // <---- Includes
 
 // ----> Camera settings control
@@ -155,7 +157,12 @@ int main(int argc, char *argv[])
     {
         struct stat st{};
         if(stat(recordFolder.c_str(), &st)!=0)
-            mkdir(recordFolder.c_str(), 0755);
+        {
+            std::string cmd = "mkdir -p " + recordFolder;
+            int ret = system(cmd.c_str());
+            if(ret != 0)
+                std::cerr << "Unable to create folder " << recordFolder << std::endl;
+        }
     }
 
     // ----> Create rendering window
