@@ -27,6 +27,9 @@
 #include <opencv2/opencv.hpp>
 #include <ctime>
 #include <sys/stat.h>
+#include <cstdio>
+#include <sstream>
+#include <cstdlib>
 // <---- Includes
 
 // ----> Camera settings control
@@ -106,9 +109,10 @@ bool autoWB=false;
 bool applyAECAGCrectLeft=false;
 bool applyAECAGCrectRight=false;
 bool enableRecord = false;
-std::string recordFolder = "build/zed_output/";
+std::string recordFolder = "build/output/zed_oc_control_example/";
 bool writerInitialized = false;
-cv::VideoWriter videoWriter;
+FILE* ffmpegLeft = nullptr;
+FILE* ffmpegRight = nullptr;
 // <---- Global variables
 
 // The main function
@@ -152,7 +156,12 @@ int main(int argc, char *argv[])
     {
         struct stat st{};
         if(stat(recordFolder.c_str(), &st)!=0)
-            mkdir(recordFolder.c_str(), 0755);
+        {
+            std::string cmd = "mkdir -p " + recordFolder;
+            int ret = system(cmd.c_str());
+            if(ret != 0)
+                std::cerr << "Unable to create folder " << recordFolder << std::endl;
+        }
     }
 
     // ----> Create rendering window
@@ -184,15 +193,34 @@ int main(int argc, char *argv[])
         {
             time_t raw_t = time(nullptr);
             struct tm* t = localtime(&raw_t);
-            char name[64];
-            strftime(name, sizeof(name), "test_zed_oc_control_example_%Y-%m-%d_%H-%M-%S.mp4", t);
-            std::string filePath = recordFolder + name;
-            videoWriter.open(filePath,
-                             cv::VideoWriter::fourcc('a','v','c','1'),
-                             static_cast<int>(params.fps),
-                             cv::Size(frame.width, frame.height));
-            if(!videoWriter.isOpened())
-                std::cerr << "Unable to open VideoWriter at " << filePath << std::endl;
+            char leftName[64];
+            char rightName[64];
+            strftime(leftName, sizeof(leftName), "left_%Y-%m-%d_%H-%M-%S.mp4", t);
+            strftime(rightName, sizeof(rightName), "right_%Y-%m-%d_%H-%M-%S.mp4", t);
+            std::string leftPath = recordFolder + leftName;
+            std::string rightPath = recordFolder + rightName;
+
+            std::stringstream leftCmd;
+            std::stringstream rightCmd;
+            int halfWidth = frame.width / 2;
+            int height = frame.height;
+            int fps = static_cast<int>(params.fps);
+            leftCmd << "ffmpeg -loglevel error -y -f rawvideo -pix_fmt bgr24 -s "
+                    << halfWidth << "x" << height
+                    << " -r " << fps << " -i - -c:v libx264 -pix_fmt yuv420p \""
+                    << leftPath << "\"";
+
+            rightCmd << "ffmpeg -loglevel error -y -f rawvideo -pix_fmt bgr24 -s "
+                     << halfWidth << "x" << height
+                     << " -r " << fps << " -i - -c:v libx264 -pix_fmt yuv420p \""
+                     << rightPath << "\"";
+
+            ffmpegLeft = popen(leftCmd.str().c_str(), "w");
+            ffmpegRight = popen(rightCmd.str().c_str(), "w");
+            if(!ffmpegLeft || !ffmpegRight)
+            {
+                std::cerr << "Unable to open ffmpeg pipes" << std::endl;
+            }
             else
                 writerInitialized = true;
         }
@@ -241,9 +269,13 @@ int main(int argc, char *argv[])
             cv::cvtColor(frameYUV,frameBGR,cv::COLOR_YUV2BGR_YUYV);
             // <---- Conversion from YUV 4:2:2 to BGR for visualization
 
-            if(enableRecord && writerInitialized && videoWriter.isOpened())
+            if(enableRecord && writerInitialized && ffmpegLeft && ffmpegRight)
             {
-                videoWriter.write(frameBGR);
+                int halfWidth = frame.width / 2;
+                cv::Mat leftImg(frameBGR, cv::Rect(0, 0, halfWidth, frame.height));
+                cv::Mat rightImg(frameBGR, cv::Rect(halfWidth, 0, halfWidth, frame.height));
+                fwrite(leftImg.data, 1, leftImg.total()*leftImg.elemSize(), ffmpegLeft);
+                fwrite(rightImg.data, 1, rightImg.total()*rightImg.elemSize(), ffmpegRight);
             }
 
             // 4.c) Show frame
@@ -275,8 +307,10 @@ int main(int argc, char *argv[])
         // <---- Keyboard handling
     }
 
-    if(videoWriter.isOpened())
-        videoWriter.release();
+    if(ffmpegLeft)
+        pclose(ffmpegLeft);
+    if(ffmpegRight)
+        pclose(ffmpegRight);
 
     return EXIT_SUCCESS;
 }
